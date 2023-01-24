@@ -44,8 +44,6 @@ type LogFunc func(c *gin.Context) []zapcore.Field
 type CheckFunc func(ctx context.Context) error
 
 var (
-	emptyLogFn = func(c *gin.Context) []zapcore.Field { return []zapcore.Field{} }
-
 	// DefaultServerShutdownTimeout sets the default for how long we give the sever
 	// to shutdown before forcefully stopping the server.
 	DefaultServerShutdownTimeout = 5 * time.Second
@@ -107,7 +105,10 @@ func DefaultEngine(lgr *zap.Logger, f LogFunc) *gin.Engine {
 		fields := []zapcore.Field{
 			zap.String("request_id", requestid.Get(c)),
 		}
-		fields = append(fields, f(c)...)
+
+		if f != nil {
+			fields = append(fields, f(c)...)
+		}
 
 		return fields
 	}
@@ -152,7 +153,7 @@ func (s Server) AddReadinessCheck(name string, f CheckFunc) Server {
 func (s *Server) initializeEngine() {
 	// Setup default gin router
 	if s.engine == nil {
-		s.engine = DefaultEngine(s.logger, emptyLogFn)
+		s.engine = DefaultEngine(s.logger, nil)
 	}
 
 	p := ginprometheus.NewPrometheus("gin")
