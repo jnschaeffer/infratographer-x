@@ -51,6 +51,18 @@ var (
 	DefaultServerShutdownTimeout = 5 * time.Second
 )
 
+// ServerOption represents an option that can be applied to a server.
+type ServerOption func(Server) Server
+
+// WithEngine sets the engine for the server to the provided Gin engine.
+func WithEngine(engine *gin.Engine) ServerOption {
+	return func(s Server) Server {
+		s.engine = engine
+
+		return s
+	}
+}
+
 // Server implements the HTTP Server
 type Server struct {
 	listen          string
@@ -60,16 +72,23 @@ type Server struct {
 	logger          *zap.Logger
 	version         *versionx.Details
 	readinessChecks map[string]CheckFunc
+	engine          *gin.Engine
 }
 
 // NewServer will return an opinionated gin server for processing API requests.
-func NewServer(lgr *zap.Logger, cfg Config, version *versionx.Details) Server {
-	return Server{
+func NewServer(lgr *zap.Logger, cfg Config, version *versionx.Details, opts ...ServerOption) Server {
+	s := Server{
 		listen:          cfg.Listen,
 		logger:          lgr.Named("ginx"),
 		version:         version,
 		readinessChecks: map[string]CheckFunc{},
 	}
+
+	for _, opt := range opts {
+		s = opt(s)
+	}
+
+	return s
 }
 
 // DefaultEngine returns a base gin engine for processing requests.
@@ -130,9 +149,11 @@ func (s Server) AddReadinessCheck(name string, f CheckFunc) Server {
 	return s
 }
 
-func (s *Server) engine() *gin.Engine {
+func (s *Server) initializeEngine() {
 	// Setup default gin router
-	r := DefaultEngine(s.logger, emptyLogFn)
+	if s.engine == nil {
+		s.engine = DefaultEngine(s.logger, emptyLogFn)
+	}
 
 	p := ginprometheus.NewPrometheus("gin")
 
@@ -141,18 +162,18 @@ func (s *Server) engine() *gin.Engine {
 		return c.FullPath()
 	}
 
-	p.Use(r)
+	p.Use(s.engine)
 
 	if s.version != nil {
 		// Version endpoint returns build information
-		r.GET("/version", s.versionHandler)
+		s.engine.GET("/version", s.versionHandler)
 	}
 
 	// Health endpoints
-	r.GET("/livez", s.livenessCheckHandler)
-	r.GET("/readyz", s.readinessCheckHandler)
+	s.engine.GET("/livez", s.livenessCheckHandler)
+	s.engine.GET("/readyz", s.readinessCheckHandler)
 
-	r.Use(func(c *gin.Context) {
+	s.engine.Use(func(c *gin.Context) {
 		u := c.GetHeader("User")
 		if u != "" {
 			c.Set("current_actor", u)
@@ -161,14 +182,12 @@ func (s *Server) engine() *gin.Engine {
 	})
 
 	for _, handler := range s.handlers {
-		handler.Routes(r.Group("/"))
+		handler.Routes(s.engine.Group("/"))
 	}
 
-	r.NoRoute(func(c *gin.Context) {
+	s.engine.NoRoute(func(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"message": "invalid request - route not found"})
 	})
-
-	return r
 }
 
 // Run will start the server listening on the specified address and listens for
@@ -182,9 +201,11 @@ func (s Server) Run() {
 		"address", s.listen,
 	)
 
+	s.initializeEngine()
+
 	srv := &http.Server{
 		Addr:    s.listen,
-		Handler: s.engine(),
+		Handler: s.engine,
 	}
 
 	go func() {
